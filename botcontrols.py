@@ -90,7 +90,7 @@ def pick_acc():
     print("Setting current account to "+apilist[accselect]["acc_name"])
 
 def tensortrain():
-    batch_size=128
+    batch_size=8
     embedding_size=2
     trainingfile="manageddata.txt"
 
@@ -114,7 +114,7 @@ def tensortrain():
         nonlocal num2word
         fn=open(datafile, 'r')
         inputdata=[]
-        if offset>0:
+        if offset!=0:
             for i in range(offset):
                 fn.readline()
         for i in range(batch_size-1):
@@ -140,11 +140,13 @@ def tensortrain():
     def collect_batches(trainingfile):
         nonlocal batch_size
         fn=open(trainingfile, 'r')
-        input_size=sum(1 for line in fn)
-        print("Number of lines in file:",input_size)
+
+
         fn.close()
         batches_x=[]
         batches_y=[]
+        input_size=sum(1 for line in fn)
+        print("Number of lines in file:",input_size)
         numruns=round(input_size/batch_size)
         offset=0
         for i in range(0,numruns):
@@ -168,64 +170,87 @@ def tensortrain():
         
     
     word2num,num2word,vocabulary_size=generate_lex(trainingfile)
-    emb_words,labels=collect_batches(trainingfile)
-    emb_words,labels=shuffle_batches(emb_words,labels)
-    
+    rnn_size=128
+    layer = {'weights':tf.Variable(tf.random_normal([rnn_size, vocabulary_size])),
+             'biases': tf.Variable(tf.random_normal([vocabulary_size]))}
+    lstm=rnn.BasicLSTMCell(rnn_size)   
+
+
     def rnn_model(x):
         x=tf.split(x,1)
         nonlocal vocabulary_size
-        rnn_size=128
-        layer = {'weights':tf.Variable(tf.random_normal([rnn_size, vocabulary_size])),
-                 'biases': tf.Variable(tf.random_normal([vocabulary_size]))}
-        lstm=rnn.BasicLSTMCell(rnn_size)
         outputs, states= rnn.static_rnn(lstm, x, dtype=tf.float32)
         outputs=outputs[0]
         output=tf.add(tf.matmul(outputs, layer['weights']), layer['biases'])
         return output
     
+    fn=open(trainingfile)
+    input_size=sum(1 for line in fn)
+    print("Number of lines in file:",input_size)
+    numbatches=round(input_size/batch_size)
+    print("{} Batches of {} Lines of Tweets".format(numbatches, batch_size))
+    fn.close
+    
     hm_epochs=3
     x = tf.placeholder('float',[embedding_size, vocabulary_size])
     y = tf.placeholder('float',[vocabulary_size])
-    global_step=tf.Variable(0,name='global_step', trainable=False)
-    globalstepup=tf.assign_add(global_step, 1, name='increment')
+    batch_itr=0
+    global_step=0
     nextword=rnn_model(x)
     nextword=nextword[0]
     cost=tf.reduce_mean( tf.nn.softmax_cross_entropy_with_logits(logits=nextword, labels=y) )
     optimizer = tf.train.AdamOptimizer().minimize(cost)
 
     with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
-        saver=tf.train.Saver()
         checkpoint_directory='./ckpt/'
+        logfile=checkpoint_directory+'traininglog.txt'
+        sess.run(tf.global_variables_initializer())
         if tf.gfile.Exists(checkpoint_directory):
             try:
                 metag=checkpoint_directory+'model.meta'
                 saver=tf.train.import_meta_graph(metag)
                 print(tf.train.latest_checkpoint(checkpoint_directory))
                 saver.restore(sess, save_path=checkpoint_directory+'model')
+                with open(logfile, 'r') as lf:
+                    batch_itr=int(lf.readline())
+                    global_step=int(lf.readline())
             except:
+                print(sys.exc_info()[1])
                 print("Couldn't load checkpoint...")
-                pass
-        save_every=1000
+                sys.exit
+        else:
+            saver=tf.train.Saver()
+        emb_words,labels=generate_batches(trainingfile, batch_size)
+        emb_words,labels=shuffle_batches(emb_words,labels)
+        save_every=batch_size
         for epoch in range(hm_epochs):
             epoch_loss = 0
-            for step in range(len(emb_words)):
-                sess.run(globalstepup)
-                for wordvec in range(len(emb_words[step])):
+            offset=int(batch_itr)
+            while(offset+batch_size<=numbatches):
+                for step in range(len(emb_words)):
                     epoch_x=emb_words[step]
                     epoch_y=labels[step]
                     _, c = sess.run([optimizer, cost], feed_dict={x: epoch_x, y: epoch_y})
                     epoch_loss += c
-                if(step%500==0):
-                    print('Loss at Global Trainging Step {}: {}'.format(sess.run(global_step), c))
-                if(step % 1000 == 0 and step != 0):
-                    print("Training Loss for this Epoch at Step {} of {}: {}".format(step,len(emb_words),epoch_loss))
-                if(step % save_every == 0):
-                    saver.save(sess, checkpoint_directory + 'model')
+                    global_step+=1
+                    if(global_step%batch_size==0):
+                        print('Loss at Global Training Step {}: {}'.format(global_step, c))
+                    if(global_step % 100 == 0 and global_step != 0):
+                        print("Training Loss for this Epoch at Step {}: {}".format(step,epoch_loss))
+                    if(global_step % save_every == 0):
+                        saver.save(sess, checkpoint_directory + 'model')
+                        with open(logfile, 'w') as trainf:
+                            trainf.truncate()
+                            trainf.write(str(batch_itr)+'\n')
+                            trainf.write(str(global_step)+'\n')
+                        print("Saved model to checkpoint directory...")
+                print("Finished Batch {} of {}".format((batch_itr/batch_size), numbatches))
+                batch_itr+=batch_size
+                offset=int(batch_itr)
+                emb_words,labels=generate_batches(trainingfile, batch_size, offset=offset)
+                emb_words,labels=shuffle_batches(emb_words,labels)
             print('Epoch:'+str(epoch+1), 'completed out of', str(hm_epochs), 'loss:', str(epoch_loss))
-            
-            
-            emb_words,labels=shuffle_batches(emb_words,labels)
+            batch_itr=0
 
 def cleandata():
     print("Data Scrub Starting...")
