@@ -89,6 +89,93 @@ def pick_acc():
     accselect=int(input())
     print("Setting current account to "+apilist[accselect]["acc_name"])
 
+def generatemltweet():
+    with open('word2numlexicon.json', 'r') as loadfile:
+        word2num=json.load(loadfile)
+    with open('num2wordlexicon.json', 'r') as loadfile:
+        num2word=json.load(loadfile)
+    startstring='donald trump'
+    startsplit=startstring.split()
+    vocabulary_size=len(word2num)
+
+    rnn_size=128
+    
+
+    x=np.zeros((2, vocabulary_size), dtype='float32')
+    x[0, word2num[startsplit[0]]]=1
+    x[1, word2num[startsplit[1]]]=1
+ 
+    print('Beginning Session...')
+
+    with tf.Session() as sess:
+        checkpoint_directory='./ckpt/'
+        print('Session started.')
+        
+        layer = {'weights':tf.Variable(tf.random_normal([rnn_size, vocabulary_size])),
+                 'biases': tf.Variable(tf.random_normal([vocabulary_size]))}
+        lstm=rnn.BasicLSTMCell(rnn_size)
+
+        #init=tf.group(tf.global_variables_initializer(),tf.local_variables_initializer())
+        
+
+        if tf.gfile.Exists(checkpoint_directory):
+            try:
+                metag=checkpoint_directory+'model.meta'
+                saver=tf.train.import_meta_graph(metag)
+                print('Found model in directory:',tf.train.latest_checkpoint(checkpoint_directory))
+                saver.restore(sess, save_path=checkpoint_directory+'model')
+                print('Model Restored.')
+                #sess.run(init)
+            except:
+                print(sys.exc_info()[1])
+                print("Couldn't load checkpoint, cannot tweet anything useful, exiting...")
+                sys.exit
+        else:
+            print('Checkpoint not found! Please train on some tweets before trying to use a model.')
+            sys.exit
+
+        def rnn_model(x):
+            x=tf.split(x,1)
+            nonlocal vocabulary_size
+            outputs, states= rnn.static_rnn(lstm, x, dtype=tf.float32)
+            outputs=outputs[0]
+            output=tf.add(tf.matmul(outputs, layer['weights']), layer['biases'])
+            return output
+
+        print('Beginning tweet generation, one word at a time...')
+        #print(tf.global_variables())
+        outputstring=startstring+' '
+        word=''
+        while(True):
+            nextwordnp=rnn_model(x)
+
+            #nextwordnp=nextword
+            #nextwordnp=nextwordnp
+            
+            iden=str(np.argmax(nextwordnp))
+            if(word2num[word]==0):
+                continue
+            word=num2word[iden]
+            if(len(outputstring+word)>=139):
+                break
+            else:
+                outputstring=outputstring+word+' '
+                print(outputstring)
+                helpstring=outputstring.split()
+                helpstring=helpstring[-2:]
+                #print(helpstring)
+                #print(x[1,:])
+                #print(nextwordnp)
+                #print(word2num[helpstring[0]])
+                idn=np.argmax(x[0,:])
+                x[0,idn]=0
+                x[0,word2num[helpstring[0]]]=1
+                idn=np.argmax(x[1,:])
+                x[1,idn]=0
+                x[1,int(word2num[word])]=1
+        print(outputstring)
+    
+
 def tensortrain():
     batch_size=8
     embedding_size=2
@@ -106,6 +193,10 @@ def tensortrain():
         print("Vocabulary Size: "+str(vocabulary_size))
         word2num=dict((c,i) for i,c in enumerate(vocabulary))
         num2word=dict((i,c) for i,c in enumerate(vocabulary))
+        with open('word2numlexicon.json', 'w') as dumpfile:
+            json.dump(word2num, dumpfile)
+        with open('num2wordlexicon.json', 'w') as dumpfile:
+            json.dump(num2word, dumpfile)
         return word2num,num2word,vocabulary_size
 
     def generate_batches(datafile,batchsize,offset=0):
@@ -222,7 +313,7 @@ def tensortrain():
             saver=tf.train.Saver()
         emb_words,labels=generate_batches(trainingfile, batch_size)
         emb_words,labels=shuffle_batches(emb_words,labels)
-        save_every=batch_size
+        save_every=1000
         for epoch in range(hm_epochs):
             epoch_loss = 0
             offset=int(batch_itr)
@@ -236,7 +327,7 @@ def tensortrain():
                     if(global_step%batch_size==0):
                         print('Loss at Global Training Step {}: {}'.format(global_step, c))
                     if(global_step % 100 == 0 and global_step != 0):
-                        print("Training Loss for this Epoch at Step {}: {}".format(step,epoch_loss))
+                        print("Training Loss for this Epoch at Step {}: {}".format(global_step,epoch_loss))
                     if(global_step % save_every == 0):
                         saver.save(sess, checkpoint_directory + 'model')
                         with open(logfile, 'w') as trainf:
@@ -324,6 +415,8 @@ def main():
         pick_acc()
         api = get_api(apilist[accselect])
         api.update_status(status=tweet)
+    elif option == 'mltweet':
+        generatemltweet()
     elif option == 'datascrub':
         cleandata()
     elif option == 'scrape':
